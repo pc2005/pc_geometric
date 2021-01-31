@@ -1,2 +1,2 @@
 # Phil Chen's geometric test
-Playground of Pytorch Geometric
+Playground of Pytorch geometric
