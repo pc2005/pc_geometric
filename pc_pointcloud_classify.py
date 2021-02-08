@@ -7,6 +7,8 @@ from torch_geometric.data import DataLoader
 from torch_geometric.nn import MessagePassing, global_max_pool
 from torch_geometric.transforms import SamplePoints
 from torch_cluster import knn_graph, radius_graph
+from torch_geometric.transforms import Compose, RandomRotate
+from pointnet import PointNet
 
 def visualize_mesh(pos, face):
     fig = plt.figure()
@@ -14,8 +16,10 @@ def visualize_mesh(pos, face):
     ax.axes.xaxis.set_ticklabels([])
     ax.axes.yaxis.set_ticklabels([])
     ax.axes.zaxis.set_ticklabels([])
-    ax.plot_trisurf(pos[:, 0], pos[:, 1], pos[:, 2], triangles=data.face.t(), antialiased=False)
-    plt.show()
+    ax.plot_trisurf(pos[:, 0], pos[:, 1], pos[:, 2], triangles=face.t(), antialiased=False)
+    # plt.show()
+    plt.pause(2)
+    plt.close()
 
 
 def visualize_points(pos, edge_index=None, index=None):
@@ -37,148 +41,131 @@ def visualize_points(pos, edge_index=None, index=None):
     plt.pause(2)
     plt.close()
 
-###? Data handling?
-dataset = GeometricShapes(root='data/GeometricShapes')
-print(dataset)
+def prepare_data():
+    ### Load dataset
+    dataset = GeometricShapes(root='data/GeometricShapes')
+    print(dataset)
 
-# data = dataset[0]
-# print(data)
-# visualize_mesh(data.pos, data.face)
+    # # visualize shapes
+    # data = dataset[2]
+    # print(data)
+    # visualize_mesh(data.pos, data.face)
 
-# data = dataset[4]
-# print(data)
-# visualize_mesh(data.pos, data.face)
+    # data = dataset[4]
+    # print(data)
+    # visualize_mesh(data.pos, data.face)
 
-### Generate point cloud
-torch.manual_seed(42)
+    ### Generate point cloud
+    torch.manual_seed(42)
 
-dataset.transform = SamplePoints(num=256)
+    dataset.transform = SamplePoints(num=256)
 
-data = dataset[0]
-print(data)
-visualize_points(data.pos, data.edge_index)
+    # data = dataset[0]
+    # print(data)
+    # visualize_points(data.pos, data.edge_index)
 
-data = dataset[4]
-print(data)
-visualize_points(data.pos)
+    # data = dataset[4]
+    # print(data)
+    # visualize_points(data.pos)
 
-### Grouping
-data = dataset[0]
-# data.edge_index = knn_graph(data.pos, k=6)
-data.edge_index = radius_graph(data.pos, r=1.0)
-print(data.edge_index.shape)
-visualize_points(data.pos, edge_index=data.edge_index)
+    ### Grouping
+    data = dataset[0]
+    # # data.edge_index = knn_graph(data.pos, k=6)
+    data.edge_index = radius_graph(data.pos, r=0.2)
+    print(data.edge_index.shape)
+    visualize_points(data.pos, edge_index=data.edge_index)
 
-data = dataset[4]
-data.edge_index = knn_graph(data.pos, k=6)
-print(data.edge_index.shape)
-visualize_points(data.pos, edge_index=data.edge_index)
+    data = dataset[4]
+    data.edge_index = knn_graph(data.pos, k=6)
+    print(data.edge_index.shape)
+    visualize_points(data.pos, edge_index=data.edge_index)
 
-### PointNet
-class PointNetLayer(MessagePassing):
-    def __init__(self, in_channels, out_channels):
-        # Message passing with "max" aggregation.
-        super(PointNetLayer, self).__init__('max')
-        
-        # Initialization of the MLP:
-        # Here, the number of input features correspond to the hidden node
-        # dimensionality plus point dimensionality (=3).
-        self.mlp = Sequential(Linear(in_channels + 3, out_channels),
-                              ReLU(),
-                              Linear(out_channels, out_channels))
-        
-    def forward(self, h, pos, edge_index):
-        # Start propagating messages.
-        return self.propagate(edge_index, h=h, pos=pos)
-    
-    def message(self, h_j, pos_j, pos_i):
-        # h_j defines the features of neighboring nodes as shape [num_edges, in_channels]
-        # pos_j defines the position of neighboring nodes as shape [num_edges, 3]
-        # pos_i defines the position of central nodes as shape [num_edges, 3]
-
-        input = pos_j - pos_i  # Compute spatial relation.
-
-        if h_j is not None:
-            # In the first layer, we may not have any hidden node features,
-            # so we only combine them in case they are present.
-            input = torch.cat([h_j, input], dim=-1)
-
-        return self.mlp(input)  # Apply our final MLP.
-
-class PointNet(torch.nn.Module):
-    def __init__(self):
-        super(PointNet, self).__init__()
-
-        torch.manual_seed(12345)
-        self.conv1 = PointNetLayer(3, 32)
-        self.conv2 = PointNetLayer(32, 32)
-        self.classifier = Linear(32, dataset.num_classes)
-        
-    def forward(self, pos, batch):
-        # Compute the kNN graph:
-        # Here, we need to pass the batch vector to the function call in order
-        # to prevent creating edges between points of different examples.
-        # We also add `loop=True` which will add self-loops to the graph in
-        # order to preserve central point information.
-        edge_index = knn_graph(pos, k=16, batch=batch, loop=True)
-        
-        # 3. Start bipartite message passing.
-        h = self.conv1(h=pos, pos=pos, edge_index=edge_index)
-        h = h.relu()
-        h = self.conv2(h=h, pos=pos, edge_index=edge_index)
-        h = h.relu()
-
-        # 4. Global Pooling.
-        h = global_max_pool(h, batch)  # [num_examples, hidden_channels]
-        
-        # 5. Classifier.
-        return self.classifier(h)
+    return dataset
 
 
-model = PointNet()
-print(model)
-
-train_dataset = GeometricShapes(root='data/GeometricShapes', train=True,
+def train_pointnet(dataset):
+    # load data for train and test
+    train_dataset = GeometricShapes(root='data/GeometricShapes', train=True,
+                                    transform=SamplePoints(128))
+    test_dataset = GeometricShapes(root='data/GeometricShapes', train=False,
                                 transform=SamplePoints(128))
-test_dataset = GeometricShapes(root='data/GeometricShapes', train=False,
-                               transform=SamplePoints(128))
+
+    train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=10)
+
+    # setup model
+    model = PointNet(dataset.num_classes)
+    print(model)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    criterion = torch.nn.CrossEntropyLoss()  # Define loss criterion.
+
+    def train(model, optimizer, loader):
+        model.train()
+        
+        total_loss = 0
+        for data in loader:
+            optimizer.zero_grad()  # Clear gradients.
+            logits = model(data.pos, data.batch)  # Forward pass.
+            loss = criterion(logits, data.y)  # Loss computation.
+            loss.backward()  # Backward pass.
+            optimizer.step()  # Update model parameters.
+            total_loss += loss.item() * data.num_graphs
+
+        return total_loss / len(train_loader.dataset)
 
 
-train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=10)
+    @torch.no_grad()
+    def test(model, loader):
+        model.eval()
 
-model = PointNet()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-criterion = torch.nn.CrossEntropyLoss()  # Define loss criterion.
+        total_correct = 0
+        for data in loader:
+            logits = model(data.pos, data.batch)
+            pred = logits.argmax(dim=-1)
+            total_correct += int((pred == data.y).sum())
 
-def train(model, optimizer, loader):
-    model.train()
-    
-    total_loss = 0
-    for data in loader:
-        optimizer.zero_grad()  # Clear gradients.
-        logits = model(data.pos, data.batch)  # Forward pass.
-        loss = criterion(logits, data.y)  # Loss computation.
-        loss.backward()  # Backward pass.
-        optimizer.step()  # Update model parameters.
-        total_loss += loss.item() * data.num_graphs
+        return total_correct / len(loader.dataset)
 
-    return total_loss / len(train_loader.dataset)
+    for epoch in range(1, 96):
+        loss = train(model, optimizer, train_loader)
+        test_acc = test(model, test_loader)
+        print(f'Epoch: {epoch:02d}, Loss: {loss:.4f}, Test Accuracy: {test_acc:.4f}')
 
 
-@torch.no_grad()
-def test(model, loader):
-    model.eval()
+    ### Test rotation impact to PointNet
+    torch.manual_seed(123)
+    random_rotate = Compose([
+        RandomRotate(degrees=180, axis=0),
+        RandomRotate(degrees=180, axis=1),
+        RandomRotate(degrees=180, axis=2),
+    ])
 
-    total_correct = 0
-    for data in loader:
-        logits = model(data.pos, data.batch)
-        pred = logits.argmax(dim=-1)
-        total_correct += int((pred == data.y).sum())
+    dataset = GeometricShapes(root='data/GeometricShapes', transform=random_rotate)
 
-    return total_correct / len(loader.dataset)
+    data = dataset[0]
+    print(data)
+    visualize_mesh(data.pos, data.face)
 
-for epoch in range(1, 51):
-    loss = train(model, optimizer, train_loader)
+    data = dataset[4]
+    print(data)
+    visualize_mesh(data.pos, data.face)
+
+    torch.manual_seed(42)
+
+    transform = Compose([
+        random_rotate,
+        SamplePoints(num=128),
+    ])
+
+    test_dataset = GeometricShapes(root='data/GeometricShapes', train=False,
+                                transform=transform)
+
+    test_loader = DataLoader(test_dataset, batch_size=10)
+
     test_acc = test(model, test_loader)
-    print(f'Epoch: {epoch:02d}, Loss: {loss:.4f}, Test Accuracy: {test_acc:.4f}')
+    print(f'Test Accuracy: {test_acc:.4f}')
+
+
+if __name__ == '__main__':
+    dataset = prepare_data()
+    train_pointnet(dataset)
