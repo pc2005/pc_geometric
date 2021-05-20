@@ -1,6 +1,8 @@
 # %%
 import networkx as nx
 import torch
+from torch.nn import Linear
+from torch_geometric.nn import GCNConv
 import matplotlib.pyplot as plt
 
 # %% Graph
@@ -141,11 +143,7 @@ from torch_geometric.utils import to_networkx
 
 G = to_networkx(data, to_undirected=True)
 visualize(G, color=data.y)
-# %%
-import torch
-from torch.nn import Linear
-from torch_geometric.nn import GCNConv
-
+# %% PyG Build GCN
 class GCN(torch.nn.Module):
     def __init__(self):
         super(GCN, self).__init__()
@@ -196,4 +194,4 @@ for epoch in range(401):
     if epoch % 10 == 0:
         visualize(h, color=data.y, epoch=epoch, loss=loss)
         time.sleep(0.3)
-# %%
+
